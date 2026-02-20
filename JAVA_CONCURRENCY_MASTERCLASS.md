@@ -2,7 +2,7 @@
 *A 2-Day Beginner-Friendly Course*
 
 ## Course Overview
-Welcome to the Java Concurrency Masterclass. This course is designed to take you from the basics of threading to modern asynchronous programming with **Java 24**.
+Welcome to the Java Concurrency Masterclass. This course is designed to take you from the basics of threading to modern asynchronous programming with **Java 21+**.
 
 > [!TIP]
 > **Interactive Labs:** This course includes a set of "Broken" code examples for you to fix. Open [JAVA_CONCURRENCY_LABS.md](JAVA_CONCURRENCY_LABS.md) to follow along!
@@ -10,7 +10,7 @@ Welcome to the Java Concurrency Masterclass. This course is designed to take you
 
 ### Prerequisites
 - Basic knowledge of Java syntax and OOP.
-- Java 24 (or at least Java 21) installed.
+- Java 21+ installed.
 
 ---
 
@@ -57,8 +57,29 @@ flowchart TD
 - **Asynchronous (Non-Blocking):** You call a function, get a "receipt" (Future), and do other work while the task runs.
   - *Example:* Ordering coffee, taking a buzzer, and sitting down to check emails until the buzzer rings.
 
-### 1.4 Processes vs. Threads
-Before understanding *how* threads communicate (JMM), we must define *what* they are.
+### 1.4 From Program to Process
+Before diving into threads, let's understand what happens when you run a Java program:
+
+1.  You write your code (`.java` file).
+2.  The compiler turns it into bytecode (`.class` file).
+3.  The JVM loads the bytecode into **memory**.
+4.  The OS allocates resources and the program becomes a **running process**.
+5.  Threads are created *within* that process to execute the bytecode.
+
+Every running process gets a set of essential resources from the OS:
+
+| Resource | What It Does |
+| :--- | :--- |
+| **Registers** | Small, fast storage holding data the CPU is actively working with (current values, addresses). |
+| **Program Counter** | Tracks *where* the CPU is in the instruction sequence ("which line am I on?"). |
+| **Stack** | Per-thread scratch space for method calls, local variables, and return addresses. |
+| **Heap** | Shared memory pool for objects allocated with `new`. All threads in a process share this. |
+
+> [!TIP]
+> You can see your running processes in **Task Manager** (Windows: `Ctrl+Shift+Esc`) or **Activity Monitor** (macOS). Try it now — look for `java` or `javaw` processes. You can see how many threads each process is using, its CPU %, and memory consumption. This is a valuable tool for debugging performance issues and unresponsive applications.
+
+### 1.5 Processes vs. Threads
+Now that we know what a process is, let's define *what* threads are.
 
 - **Process:** An instance of a running program (e.g., the JVM).
   - *Analogy:* **A Factory.**
@@ -67,10 +88,83 @@ Before understanding *how* threads communicate (JMM), we must define *what* they
   - *Analogy:* **Workers** inside the Factory.
   - **Characteristics:** Lightweight. They share the factory floor (Heap Memory). They can easily pass tools to each other.
 
+#### Stack vs. Heap: What Threads Share (and Don't)
+This is a **critical** distinction:
+- Each thread gets its **own Stack** (local variables, method calls — private to that thread).
+- All threads in a process **share the Heap** (objects created with `new`).
+
+```mermaid
+flowchart TB
+    subgraph Process ["JVM Process"]
+        direction TB
+        Heap["Heap (Shared)\nObjects, arrays, class instances"]
+        subgraph T1 ["Thread 1"]
+            Stack1["Stack 1\nLocal vars, method frames"]
+            PC1["Program Counter 1"]
+        end
+        subgraph T2 ["Thread 2"]
+            Stack2["Stack 2\nLocal vars, method frames"]
+            PC2["Program Counter 2"]
+        end
+        T1 --> Heap
+        T2 --> Heap
+    end
+    style Heap fill:#ffe,stroke:#f66,stroke-width:2px
+    style Stack1 fill:#e1f5fe,stroke:#0277bd
+    style Stack2 fill:#e1f5fe,stroke:#0277bd
+```
+
+This is why concurrency bugs happen: **the Heap is shared**, so two threads can read/write the same object simultaneously. The Stack is safe because it's private.
+
 **Why is this important?**
 Because workers (Threads) share the same space, they can step on each other's toes or fight over tools. This shared access leads to the complexity of the Java Memory Model.
 
-### 1.5 The Java Memory Model (JMM)
+#### Multiprocessing vs. Multithreading
+
+| Feature | **Multiprocessing** | **Multithreading** |
+| :--- | :--- | :--- |
+| **Memory** | Separate memory per process | Shared memory within process |
+| **Crash Scope** | One process crash doesn't affect others | One thread crash may crash the entire process |
+| **Communication** | Needs IPC (pipes, sockets) | Easier (shared memory) |
+| **Overhead** | Higher (new memory space per process) | Lower (threads share heap) |
+| **Best For** | CPU-intensive, isolated tasks | I/O-bound or lightweight concurrent tasks |
+
+#### Real-World Example: Google Chrome's Architecture
+When Google designed Chrome, they chose to run **each browser tab as a separate process** instead of threads. Why?
+
+- **Crash isolation:** If one tab crashes (e.g., a bad JavaScript page), other tabs keep working. You just close that tab.
+- **Security:** A malicious website in one process cannot access memory of another tab.
+- **OS memory management:** Inactive tabs (processes) can be swapped to disk by the OS when memory is low.
+
+**The trade-off:** Starting a new process per tab costs more memory than a thread. But Google bet that crash isolation and security were worth it — and they were right.
+
+> [!NOTE]
+> In Java, we almost always work with **threads within a single JVM process**. But this Chrome example helps you understand *when* separate processes are the better choice.
+
+### 1.6 Context Switching
+When the CPU switches from one task (thread or process) to another, it performs a **context switch**. This involves:
+1.  **Saving** the current task's state (registers, stack pointer, program counter).
+2.  **Loading** the next task's saved state.
+3.  **Resuming** execution of the next task.
+
+*Analogy:* It's like switching between tabs in a browser with lots of unsaved forms — each switch takes time and focus to restore where you left off.
+
+> [!NOTE]
+> Context switches are **not free**. They cost CPU cycles and can flush CPU caches, which is why creating too many threads can actually *hurt* performance. This is one reason we use **Thread Pools** (Module 3) instead of creating a new thread per task.
+
+```mermaid
+sequenceDiagram
+    participant CPU
+    participant ThreadA as Thread A
+    participant ThreadB as Thread B
+    CPU->>ThreadA: Running
+    Note over CPU,ThreadA: Timer interrupt / I/O block
+    CPU->>CPU: Save Thread A state
+    CPU->>CPU: Load Thread B state
+    CPU->>ThreadB: Running
+```
+
+### 1.7 The Java Memory Model (JMM)
 This is often the hardest part for beginners. Java threads communicate by sharing memory, but they also have their own local cache (working memory).
 
 #### The "Shared Blackboard" Analogy
@@ -169,7 +263,9 @@ stateDiagram-v2
 - **New:** Created but not started.
 - **Runnable:** Ready to run (waiting for CPU time).
 - **Running:** Actively executing code.
-- **Blocked/Waiting:** Paused (waiting for a lock or a signal).
+- **Blocked:** Waiting to acquire a monitor lock (to enter a `synchronized` block).
+- **Waiting:** Paused indefinitely for another thread to perform a specific action (signal).
+- **Timed Waiting:** Paused for a specified waiting time (e.g., `Thread.sleep(ms)`).
 - **Terminated:** Finished execution.
 
 ### 2.2a Thread Interruption (Stopping a Thread)
@@ -196,21 +292,23 @@ thread.start();
 thread.interrupt(); // Sends the signal
 ```
 
-### 2.3 Blocking vs. Locking (The Difference)
-Beginners often confuse these two terms. They both make a thread "wait", but for different reasons.
+### 2.3 Blocked vs. Waiting vs. Sleeping
+Beginners often confuse these terms. They all make a thread "wait", but for different reasons.
 
-| Feature | **Blocking (I/O)** | **Locking (Synchronization)** |
-| :--- | :--- | :--- |
-| **Reason** | Waiting for an external resource (Network, Disk). | Waiting for permission to access shared memory. |
-| **Analogy** | **Ordering Pizza:** You call (request) and wait on the line until they answer. You can't start eating until it arrives. | **Fitting Room:** You want to try clothes, but the door is locked. You wait until the person inside comes out. |
-| **Code Example** | `db.executeQuery("SELECT *")` or `socket.read()` | `synchronized(this) { count++ }` |
-| **CPU State** | CPU is idle (thread is swapped out). | CPU is idle (thread is blocked by OS). |
+| Feature | **Blocked** | **Waiting** | **Timed Waiting (Sleeping)** |
+| :--- | :--- | :--- | :--- |
+| **Reason** | Waiting for an **Intrinsic Lock** (Monitor). | Waiting for a **Signal** from another thread. | Waiting for a **Clock** (Time to pass). |
+| **Analogy** | **Fitting Room:** Door is locked from inside. You wait outside. | **Coffee Shop:** You've ordered and are waiting for your name to be called. | **Alarm Clock:** You are taking a nap for exactly 20 minutes. |
+| **Trigger** | Trying to enter `synchronized`. | `object.wait()`, `thread.join()`. | `Thread.sleep(ms)`. |
+| **Transition** | Automatically moves to Runnable when lock is free. | Needs another thread to call `notify()` or `notifyAll()`. | Automatically moves to Runnable when time is up. |
+| **CPU State** | Suspended by OS. | Suspended by OS. | Suspended by OS. |
 
 ### 2.4 The Race Condition (The "Lost Update" Bug)
 This is the most common concurrency bug. Let's demonstrate it with a shared counter.
 
 ```java
-class Counter {
+// RaceConditionDemo.java — Run this multiple times to see different results!
+public class RaceConditionDemo {
     private int count = 0;
 
     public void increment() {
@@ -218,18 +316,42 @@ class Counter {
     }
 
     public int getCount() { return count; }
+
+    public static void main(String[] args) throws InterruptedException {
+        RaceConditionDemo counter = new RaceConditionDemo();
+
+        Thread t1 = new Thread(() -> {
+            for (int i = 0; i < 1_000; i++) counter.increment();
+        });
+        Thread t2 = new Thread(() -> {
+            for (int i = 0; i < 1_000; i++) counter.increment();
+        });
+
+        t1.start();
+        t2.start();
+        t1.join(); // Wait for t1 to finish
+        t2.join(); // Wait for t2 to finish
+
+        System.out.println("Expected: 2000");
+        System.out.println("Actual:   " + counter.getCount());
+    }
 }
 ```
-If we run this with 2 threads each incrementing 1,000 times, we expect 2,000. But we often get 1,998 or 1,500.
+
+**Try it:** Run this multiple times. You expect `2000`, but you'll often get results like `1998`, `1847`, or `1500`.
 
 **Why?**
 Both threads read `count = 10` at the same time. Both add 1. Both write `11`. We lost one increment.
 
 ### 2.5 Synchronizing Access (The Lock)
-To fix race conditions, we must ensure **Mutual Exclusion**. Only one thread can enter the critical section at a time.
+To fix race conditions, we must ensure **Mutual Exclusion**. Only one thread can enter the critical section at a time. Java provides two ways to do this.
 
 #### Solution 1: The `synchronized` Keyword
-This is the easiest way. It uses the object's intrinsic lock (monitor).
+Every Java object has a built-in lock called an **intrinsic lock** (or **monitor**). When you mark a method or block as `synchronized`, Java automatically:
+1.  **Acquires** the lock before entering the method.
+2.  **Releases** the lock when the method exits (even if an exception is thrown).
+
+Only one thread can hold the lock at a time. Any other thread trying to enter a `synchronized` method on the same object will **wait** until the lock is released.
 
 ```java
 public synchronized void increment() {
@@ -239,7 +361,9 @@ public synchronized void increment() {
 Now, if Thread A is inside `increment()`, Thread B blocks (waits) until A finishes.
 
 #### Solution 2: Explicit Locks (`ReentrantLock`)
-For more control (like trying to lock but giving up after a timeout), use `ReentrantLock`.
+`synchronized` is simple but limited — you can't interrupt a thread waiting for a lock, you can't try to acquire a lock with a timeout, and you can't use fairness policies.
+
+`ReentrantLock` gives you **explicit control** over locking. The word "reentrant" means the same thread can acquire the lock multiple times without deadlocking itself (it just increments a hold count).
 
 ```java
 import java.util.concurrent.locks.ReentrantLock;
@@ -275,9 +399,10 @@ boolean pizzaReady = false;
 // Thread 1: The Waiter
 synchronized(lock) {
     while(!pizzaReady) { // Always check condition in a loop!
-        lock.wait(); // Releases lock and sleeps
+        // wait() puts the thread in the WAITING state and RELEASES the lock
+        lock.wait(); 
     }
-    // Wake up and eat!
+    // Wake up (transition back to Runnable -> Running) and eat!
 }
 
 // Thread 2: The Chef
@@ -286,6 +411,24 @@ synchronized(lock) {
     lock.notifyAll(); // Wakes up the Waiter
 }
 ```
+
+### 2.6a Real-World Software Examples
+While low-level, `wait` and `notify` are the "atoms" used to build high-level concurrency tools.
+
+1.  **Bounded Buffers (Flow Control)**: 
+    *   *Usage:* Preventing a fast producer from overwhelming a slow consumer.
+    *   *Logic:* If the buffer is full, the producer calls `wait()`. When the consumer takes an item, it calls `notify()` to wake the producer up.
+2.  **Thread Pools (Idle Management)**: 
+    *   *Usage:* Keeping worker threads alive without burning CPU cycles.
+    *   *Logic:* Worker threads run in a loop. If the task queue is empty, they call `wait()`. When you `submit()` a task, the pool calls `notifyAll()` to wake a worker.
+3.  **Database Connection Pools**: 
+    *   *Usage:* Managing a limited set of expensive resources.
+    *   *Logic:* If no connections are available, the requesting thread calls `wait()`. When another thread returns a connection, it calls `notify()` to signal availability.
+4.  **Service Initialization (Guarded Suspension)**: 
+    *   *Usage:* Waiting for a background dependency (like a Config Loader) to finish.
+    *   *Logic:* The main thread calls `wait()` until the loader thread sets an `isReady` flag and calls `notify()`.
+
+---
 
 ### 2.7 Choosing the Right Lock (Advanced)
 Not all locks are created equal. Choose the right tool for the job.
@@ -640,7 +783,7 @@ all.thenRun(() -> {
 });
 ```
 
-### 4.4 Error Handling & Timeouts (Java 24+ Friendly)
+### 4.4 Error Handling & Timeouts (Java 21+ Friendly)
 Production code needs robust error handling.
 
 ```java
@@ -679,6 +822,14 @@ In this final module, we look at performance, testing, and the future of Java co
 - **I/O Bound (DB calls, HTTP):** Threads spend most time waiting. You need *more* threads.
   - *Goal:* Keep the CPU busy while others wait.
 
+#### Hyper-Threading / SMT
+Modern CPUs often support **Simultaneous Multithreading (SMT)**, also known as **Hyper-Threading** (Intel's term). Each physical core can handle **2 logical threads** concurrently by sharing execution resources.
+
+- A **4-core CPU with SMT** reports **8 logical processors** to the OS.
+- `Runtime.getRuntime().availableProcessors()` returns the **logical** count (e.g., 8), not physical cores (4).
+- For **CPU-bound** work, using more threads than *physical* cores gives diminishing returns since the logical threads still compete for the same ALU/FPU.
+- For **I/O-bound** work, the extra logical threads help keep the core busy while one thread is waiting.
+
 ### 5.2 Testing Concurrency
 Testing threaded code is hard because bugs are non-deterministic.
 - **Tools:** Use **JCStress** for low-level lock testing.
@@ -698,7 +849,7 @@ public void testAsync() throws InterruptedException {
 }
 ```
 
-### 5.3 Virtual Threads (Java 21 / 24+)
+### 5.3 Virtual Threads (Java 21+)
 This is the biggest change in Java history.
 **Platform Threads (Old):** 1 Java Thread = 1 OS Thread (Heavy, ~2MB RAM).
 **Virtual Threads (New):** 1000s of Virtual Threads = 1 OS Thread (Light, ~bytes).
