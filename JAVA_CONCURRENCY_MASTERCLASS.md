@@ -613,15 +613,196 @@ try {
 ```
 
 ### 3.3 Concurrent Collections
-Never use `ArrayList` or `HashMap` in a multi-threaded request without locking!
-- **Bad:** `HashMap` (Not thread safe, can cause infinite loops).
-- **Better:** `Collections.synchronizedMap(new HashMap<>())` (Safe, but slow - coarse locking).
-- **Best:** `ConcurrentHashMap` (Safe and fast - lock stripping).
+Never use `ArrayList` or `HashMap` in a multi-threaded environment without external synchronization.
 
+#### 1. The `HashMap` Issue
+`HashMap` is not thread-safe. When multiple threads modify a `HashMap` simultaneously, several things can go wrong:
+- **Data Loss:** Two threads trying to put different keys at the same hash bucket might overwrite each other.
+- **Corrupt Internal State:** The `size` count can become inaccurate.
+- **Infinite Loops (Legacy):** In older Java versions (pre-Java 8), concurrent resizing could cause a circular dependency in the underlying linked list, leading to 100% CPU usage.
+
+**Example: HashMap failing in a multi-threaded environment**
 ```java
-Map<String, Integer> map = new ConcurrentHashMap<>();
-map.put("Key", 1); // Thread-safe
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+public class HashMapIssueDemo {
+    public static void main(String[] args) throws InterruptedException {
+        Map<String, Integer> map = new HashMap<>(); // Standard HashMap
+        int numberOfThreads = 2;
+        int incrementsPerThread = 5000;
+
+        ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
+
+        for (int i = 0; i < numberOfThreads; i++) {
+            executor.submit(() -> {
+                for (int j = 0; j < incrementsPerThread; j++) {
+                    // Two threads trying to put 10,000 unique keys
+                    map.put(Thread.currentThread().getName() + "-" + j, j);
+                }
+            });
+        }
+
+        executor.shutdown();
+        executor.awaitTermination(1, TimeUnit.MINUTES);
+
+        System.out.println("Expected size: " + (numberOfThreads * incrementsPerThread));
+        System.out.println("Actual size:   " + map.size());
+    }
+}
 ```
+*Note: Run this multiple times. You will likely see the "Actual size" is less than 10,000 because of race conditions during `put()` operations.*
+
+#### 2. The `ConcurrentHashMap` Solution
+`ConcurrentHashMap` is designed for high concurrency. Instead of locking the entire map (like `Hashtable` or `Collections.synchronizedMap`), it uses **Lock Stripping**. It divides the map into segments and only locks the specific segment being modified.
+
+**Example: ConcurrentHashMap solving the issue**
+```java
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+public class ConcurrentHashMapSolution {
+    public static void main(String[] args) throws InterruptedException {
+        Map<String, Integer> map = new ConcurrentHashMap<>(); // Thread-safe!
+        int numberOfThreads = 2;
+        int incrementsPerThread = 5000;
+
+        ExecutorService executor = Executors.newFixedThreadPool(numberOfThreads);
+
+        for (int i = 0; i < numberOfThreads; i++) {
+            executor.submit(() -> {
+                for (int j = 0; j < incrementsPerThread; j++) {
+                    map.put(Thread.currentThread().getName() + "-" + j, j);
+                }
+            });
+        }
+
+        executor.shutdown();
+        executor.awaitTermination(1, TimeUnit.MINUTES);
+
+        System.out.println("Expected size: " + (numberOfThreads * incrementsPerThread));
+        System.out.println("Actual size:   " + map.size());
+    }
+}
+```
+*Result: This will consistently print 10,000 because ConcurrentHashMap handles the internal synchronization correctly.*
+
+#### Comparison: Thread-Safe Maps
+
+| Feature | `HashMap` | `SynchronizedMap` | `ConcurrentHashMap` |
+| :--- | :--- | :--- | :--- |
+| **Thread-Safe** | No | Yes | Yes |
+| **Locking Strategy** | None | Whole Object Lock (Slow) | Lock Stripping (Fast) |
+| **Performance** | Fastest (Single-thread) | Slowest (Concurrency Bottleneck) | Optimized for Multi-threading |
+| **Compound Ops** | Unsafe | Needs external sync | Provided (e.g., `putIfAbsent`) |
+
+#### Deep Dive: Whole Object Lock vs. Lock Stripping
+
+**Whole Object Lock** (e.g., `Hashtable`, `Collections.synchronizedMap`):
+- **Mechanism:** One single "monitor" lock for the entire map instance.
+- **Analogy:** A **Single-Occupancy Building**. No matter which room you want to visit, you need the front door key. If Thread A is reading from room 1, Thread B must wait at the front door just to read from room 20.
+- **Impact:** high contention. Even read-only operations block each other.
+
+**Lock Stripping** (e.g., `ConcurrentHashMap`):
+- **Mechanism:** The map is divided into many independent buckets (segments). Each bucket has its own lock.
+- **Analogy:** A **Hotel with many rooms**. You only need the key for the specific room you are entering. Thread A can modify Room 1 while Thread B simultaneously modifies Room 5.
+- **Impact:** High throughput. Multiple threads can read and write to different parts of the map at the same time without any waiting.
+
+#### 3. Thread-Safe Lists: `CopyOnWriteArrayList`
+Just as `HashMap` is not thread-safe, `ArrayList` is also prone to issues (like `ConcurrentModificationException`) when accessed by multiple threads.
+
+While `Collections.synchronizedList` exists, the concurrent replacement is **`CopyOnWriteArrayList`**.
+
+**How it works:**
+- **Analogy:** A **Snapshot System**. Every time you want to *modify* (add/remove) the list, it creates a brand new copy of the entire underlying array.
+- **Why?** This ensures that any thread currently *reading* the list sees a consistent, immutable snapshot. Reads never block!
+- **Trade-off:**
+    - **Pros:** Ultra-fast reads. Perfect for "Read-Heavy" scenarios (e.g., a list of listeners or configuration settings).
+    - **Cons:** Very expensive writes. If the list is large or you modify it frequently, the performance will crawl due to constant array copying.
+
+**Example: ArrayList failing with ConcurrentModificationException (Multi-threaded)**
+```java
+import java.util.ArrayList;
+import java.util.List;
+
+public class ArrayListIssueDemo {
+    public static void main(String[] args) {
+        List<String> list = new ArrayList<>();
+        list.add("Item 1");
+        list.add("Item 2");
+        list.add("Item 3");
+
+        // Thread 1: Reader - Iterating through the list
+        new Thread(() -> {
+            try {
+                for (String item : list) {
+                    System.out.println("Reading: " + item);
+                    Thread.sleep(50); // Give writer time to strike
+                }
+            } catch (Exception e) {
+                System.out.println("READER CAUGHT: " + e);
+            }
+        }).start();
+
+        // Thread 2: Writer - Modifying the list simultaneously
+        new Thread(() -> {
+            try {
+                Thread.sleep(20);
+                list.add("Item 4"); // CRASH! The reader is iterating
+                System.out.println("Writer added Item 4");
+            } catch (Exception e) {
+                System.out.println("WRITER CAUGHT: " + e);
+            }
+        }).start();
+    }
+}
+```
+*Note: The Reader will throw `ConcurrentModificationException` because the Writer modified the structure while iteration was in progress.*
+
+**Example: CopyOnWriteArrayList solving the issue (Multi-threaded)**
+```java
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+public class CopyOnWriteArrayListSolution {
+    public static void main(String[] args) {
+        List<String> list = new CopyOnWriteArrayList<>();
+        list.add("Item 1");
+        list.add("Item 2");
+        list.add("Item 3");
+
+        // Thread 1: Reader - Safe because it uses a Snapshot of the array
+        new Thread(() -> {
+            try {
+                for (String item : list) {
+                    System.out.println("Reading: " + item);
+                    Thread.sleep(50); 
+                }
+            } catch (Exception e) {
+                System.out.println("READER CAUGHT: " + e);
+            }
+        }).start();
+
+        // Thread 2: Writer - Creates a NEW copy of the array. Reader is unaffected.
+        new Thread(() -> {
+            try {
+                Thread.sleep(20);
+                list.add("Item 4");
+                System.out.println("Writer added Item 4");
+            } catch (Exception e) {
+                System.out.println("WRITER CAUGHT: " + e);
+            }
+        }).start();
+    }
+}
+```
+*Result: Both threads finish successfully. The Reader continues with its snapshot, and the Writer's change will be visible to any NEW iteration started after the modification.*
 
 ### 3.4 Design Pattern Lab: Producer-Consumer
 The "Hello World" of concurrency patterns. Steps:
@@ -729,8 +910,36 @@ public class SumTask extends RecursiveTask<Long> {
             return leftResult + rightResult;
         }
     }
+
+    public static void main(String[] args) {
+        long[] numbers = new long[100_000];
+        for (int i = 0; i < numbers.length; i++) numbers[i] = i;
+
+        ForkJoinPool pool = new ForkJoinPool();
+        SumTask task = new SumTask(numbers, 0, numbers.length);
+
+        long result = pool.invoke(task); // Start the task
+        System.out.println("Final Sum: " + result);
+    }
 }
 ```
+
+#### Understanding the `SumTask` Logic
+
+The logic follows a standard **Divide and Conquer** pattern to maximize CPU usage:
+
+1.  **The Base Case (THRESHOLD):**
+    We don't want to split tasks forever. Creating a new task has overhead. If the workload is small enough (controlled by `THRESHOLD`), it's faster to just sum it in a simple `for` loop than to bother splitting it again.
+2.  **The Recursive Case (Split):**
+    If the workload is too big, we find the middle point and create two new `SumTask` objects. One handles the left half of the array, the other handles the right.
+3.  **Fork & Join (Parallelism):**
+    - `left.fork()`: Tells the pool to put this task in the queue. Other idle threads can now "steal" this work.
+    - `right.compute()`: The **current thread** immediately starts working on the right half. This is a crucial optimization—maintaining the current thread's productivity!
+    - `left.join()`: Finally, the thread waits for the left task to finish and retrieves its result.
+4.  **Result:** Combine `leftResult + rightResult` and return.
+
+> [!NOTE]
+> On a modern 8-core CPU, a normal loop uses only one core. `SumTask` allows the `ForkJoinPool` to spread the work across all available cores, ensuring no CPU power goes to waste.
 
 ---
 
@@ -740,47 +949,72 @@ public class SumTask extends RecursiveTask<Long> {
 **CompletableFuture** allows us to build **Non-Blocking Pipelines**.
 
 ### 4.1 Creating Async Tasks
-Use `supplyAsync` for tasks that return a result.
+Use `supplyAsync` for tasks that return a result. In modern Java, `HttpClient` integrates perfectly with `CompletableFuture`.
 
 ```java
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.concurrent.CompletableFuture;
 
-CompletableFuture.supplyAsync(() -> {
-    // This runs in the ForkJoinPool.commonPool() by default
-    return "Hello";
-})
-.thenApply(s -> s + " World") // Transform Data
-.thenAccept(System.out::println); // Consume Data
+HttpClient client = HttpClient.newHttpClient();
+HttpRequest request = HttpRequest.newBuilder()
+        .uri(URI.create("https://httpbin.org/get"))
+        .build();
+
+// supplyAsync is implicit here as sendAsync returns a CompletableFuture
+client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+      .thenApply(HttpResponse::body)
+      .thenAccept(System.out::println);
 ```
 
-### 4.2 Chaining & Composing
-- **thenApply:** `map()` (Transform T -> R)
-- **thenCompose:** `flatMap()` (Chain one async task after another)
+### 4.2 Chaining & Composing (Sequential Flow)
+- **thenApply:** `map()` (Transform result T -> R).
+- **thenCompose:** `flatMap()` (Run a second async task using the result of the first).
 
+**Example: Fetch a Secure Token, then fetch User Data**
 ```java
-CompletableFuture<User> getUser(int id) { ... }
-CompletableFuture<Order> getOrders(User user) { ... }
+CompletableFuture<String> tokenFuture = client.sendAsync(
+    HttpRequest.newBuilder().uri(URI.create("https://httpbin.org/uuid")).build(),
+    HttpResponse.BodyHandlers.ofString()
+).thenApply(HttpResponse::body);
 
-// Wrong: Returns CompletableFuture<CompletableFuture<Order>>
-/* getUser(1).thenApply(user -> getOrders(user)); */
-
-// Correct: Flattens the result
-getUser(1).thenCompose(user -> getOrders(user));
-```
-
-### 4.3 Combining Multiple Tasks
-Run tasks in parallel and wait for all (or any).
-
-```java
-CompletableFuture<String> api1 = CompletableFuture.supplyAsync(() -> "Data 1");
-CompletableFuture<String> api2 = CompletableFuture.supplyAsync(() -> "Data 2");
-
-CompletableFuture<Void> all = CompletableFuture.allOf(api1, api2);
-
-all.thenRun(() -> {
-    // Both are done!
-    System.out.println("Done!");
+// Chaining: Use the UUID/Token to make a second call
+CompletableFuture<String> result = tokenFuture.thenCompose(token -> {
+    return client.sendAsync(
+        HttpRequest.newBuilder().uri(URI.create("https://httpbin.org/headers"))
+                   .header("X-Auth-Token", token).build(),
+        HttpResponse.BodyHandlers.ofString()
+    ).thenApply(HttpResponse::body);
 });
+
+result.thenAccept(System.out::println);
+```
+
+### 4.3 Combining Multiple Tasks (Parallel Flow)
+Run multiple independent tasks in parallel and wait for all of them to complete.
+
+```java
+CompletableFuture<String> call1 = client.sendAsync(
+    HttpRequest.newBuilder().uri(URI.create("https://httpbin.org/ip")).build(),
+    HttpResponse.BodyHandlers.ofString()
+).thenApply(HttpResponse::body);
+
+CompletableFuture<String> call2 = client.sendAsync(
+    HttpRequest.newBuilder().uri(URI.create("https://httpbin.org/user-agent")).build(),
+    HttpResponse.BodyHandlers.ofString()
+).thenApply(HttpResponse::body);
+
+// Combine: wait for both
+CompletableFuture.allOf(call1, call2)
+    .thenRun(() -> {
+        try {
+            System.out.println("Combined Results:");
+            System.out.println("IP: " + call1.get());
+            System.out.println("User-Agent: " + call2.get());
+        } catch (Exception e) { e.printStackTrace(); }
+    });
 ```
 
 ### 4.4 Error Handling & Timeouts (Java 21+ Friendly)
@@ -834,6 +1068,7 @@ Modern CPUs often support **Simultaneous Multithreading (SMT)**, also known as *
 Testing threaded code is hard because bugs are non-deterministic.
 - **Tools:** Use **JCStress** for low-level lock testing.
 - **Unit Tests:** Use `CountDownLatch` or `Awaitility` to wait for async operations.
+- **Deep Dive:** [Async Testing with Awaitility](file:///c:/dev/work/java-concurrency-course/ASYNC_TESTING_MASTERCLASS.md)
 
 ```java
 @Test
