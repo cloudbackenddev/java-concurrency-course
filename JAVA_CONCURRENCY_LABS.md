@@ -56,26 +56,6 @@ Run this code multiple times.
 Fix the `buy()` method so that we **never** go below 0. 
 *Hint:* You need to make the "Check-Then-Act" atomic.
 
-<details>
-<summary><b>Click to Reveal Solution</b></summary>
-
-### Solution
-We can use the `synchronized` keyword to ensure only one thread enters the check-and-decrement block at a time.
-
-```java
-static synchronized void buy() {
-    if (items > 0) {
-        try { Thread.sleep(10); } catch (InterruptedException e) {}
-        items--;
-        System.out.println("Item bought! Remaining: " + items);
-    } else {
-        System.out.println("Out of stock!");
-    }
-}
-```
-**Alternative:** Use `AtomicInteger` (harder here because of the condition) or a `ReentrantLock`.
-</details>
-
 ---
 
 ## Lab 2: The Stalled Intersection (Deadlocks)
@@ -133,28 +113,6 @@ Run the code.
 Fix the deadlock so both trains can pass (one after another).
 *Hint:* Change the order in which locks are acquired.
 
-<details>
-<summary><b>Click to Reveal Solution</b></summary>
-
-### Solution
-Ensure both threads acquire the locks in the **SAME ORDER**.
-
-```java
-// Train B (Fixed)
-new Thread(() -> {
-    // Both trains acquire Track 1 FIRST, then Track 2
-    synchronized (track1) { // CHANGED ORDER
-        System.out.println("Train B waiting for Track 2..."); // hold 1 now
-        
-        synchronized (track2) {
-            System.out.println("Train B passing through!");
-        }
-    }
-}).start();
-```
-Now, Train A grabs Track 1. Train B tries to grab Track 1 but waits. Train A grabs Track 2, finishes, and releases everything. Then Train B proceeds.
-</details>
-
 ---
 
 ## Lab 3: The Slow Search Engine (Thread Pools)
@@ -197,40 +155,6 @@ public class SearchEngine {
 ### Your Task
 Use an `ExecutorService` to process them in **Parallel**. Try to get the total time down to ~1 second.
 
-<details>
-<summary><b>Click to Reveal Solution</b></summary>
-
-### Solution
-Use a CachedThreadPool or FixedThreadPool.
-
-```java
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-
-public class ParallelSearch {
-    public static void main(String[] args) throws InterruptedException {
-        List<String> users = Arrays.asList("Alice", "Bob", "Charlie", "Dave", "Eve", "Frank");
-        ExecutorService executor = Executors.newCachedThreadPool(); // Creates threads as needed
-        
-        long start = System.currentTimeMillis();
-
-        for (String user : users) {
-             executor.submit(() -> processUser(user));
-        }
-
-        executor.shutdown();
-        executor.awaitTermination(5, TimeUnit.SECONDS); // Wait for all to finish
-
-        long end = System.currentTimeMillis();
-        System.out.println("Total time: " + (end - start) + "ms");
-    }
-    // processUser method remains the same
-}
-```
-**Result:** It should run in roughly 1005ms!
-</details>
-
 ---
 
 ## Lab 4: The Order Processor (CompletableFuture)
@@ -243,27 +167,54 @@ You need to process an order by:
 3.  Calculating the Total (Wait for Step 2, then Instant)
 
 ### The Problem Code
-The synchronous way blocks the thread for 1 second per request. 
+Copy this into `OrderProcessor.java`. It demonstrates the slow, synchronous way.
 
 ```java
-import java.util.concurrent.CompletableFuture;
-
 public class OrderProcessor {
     public static void main(String[] args) {
         long start = System.currentTimeMillis();
 
-        // Standard blocking approach (Simulated)
+        // 1. Fetch User (500ms)
         User user = getUser(1);
+        // 2. Fetch Orders (500ms)
         Order order = getOrders(user);
+        // 3. Calculate Total (Instant)
         int total = calculateTotal(order);
         
-        System.out.println("Total: $" + total);
+        System.out.println("Processed for " + user.name + ": $" + total);
         
         long end = System.currentTimeMillis();
-        System.out.println("Time: " + (end - start) + "ms");
+        System.out.println("Total Time: " + (end - start) + "ms");
     }
 
-    // ... Helper methods (getUser etc.) would be here
+    // --- Mock Fetching Methods ---
+    static User getUser(int id) {
+        sleep(500);
+        return new User(id, "John Doe");
+    }
+
+    static Order getOrders(User user) {
+        sleep(500);
+        return new Order(user.id, 250);
+    }
+
+    static int calculateTotal(Order order) {
+        return order.price + 50; // + $50 shipping
+    }
+
+    static void sleep(int ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) {}
+    }
+}
+
+class User {
+    int id; String name;
+    User(int id, String name) { this.id = id; this.name = name; }
+}
+
+class Order {
+    int userId; int price;
+    Order(int userId, int price) { this.userId = userId; this.price = price; }
 }
 ```
 
@@ -274,31 +225,17 @@ Rewrite this using `CompletableFuture`.
 - **Then** calculate total.
 - **Then** print the result.
 Ensure the main thread doesn't exit before the async work is done (use `join()` at the end for testing).
-
-<details>
-<summary><b>Click to Reveal Solution</b></summary>
-
-### Solution
-Use `supplyAsync` and `thenCompose` (because getOrders likely returns a Future too, or simulates a dependent action). If getOrders was synchronous, `thenApply` would work. Assuming we want a pure async chain:
-
-```java
-CompletableFuture.supplyAsync(() -> getUser(1))
-    .thenCompose(user -> CompletableFuture.supplyAsync(() -> getOrders(user)))
-    .thenApply(order -> calculateTotal(order))
-    .thenAccept(total -> System.out.println("Total: $" + total))
-    .join(); // Block main thread so we see output
-```
-</details>
-
 ---
 
 ## Lab 5: The Million User Challenge (Virtual Threads)
 **Concept:** Scalability & Scalable Thread Safety
 
 ### The Scenario
-You want to simulate 100,000 clients connecting to your server. 
+You want to simulate 100,000 clients connecting to your server *at the same time*. 
 1. Each client waits for 1 second (simulating network latency).
 2. We want to **count** how many clients successfully connected.
+
+**The Goal:** See why "One Thread Per Request" doesn't scale for high concurrency, and how to count safely.
 
 ### The Problem Code
 Try to do this with standard threads. **Warning: This might crash your JVM if you go too high!**
@@ -307,60 +244,33 @@ Also, notice the `count++` — is it safe?
 ```java
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class CrashTest {
     static int visitCount = 0; // Shared Counter
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws InterruptedException {
         // Standard Threads (Heavy!)
-        try (ExecutorService executor = Executors.newCachedThreadPool()) {
-            for (int i = 0; i < 100_000; i++) {
-                 executor.submit(() -> {
-                     try { Thread.sleep(1000); } catch (Exception e) {}
-                     visitCount++; // NOT THREAD SAFE!
-                 });
-            }
-        } // Auto-close waits for tasks
+        ExecutorService executor = Executors.newCachedThreadPool();
+        
+        for (int i = 0; i < 100_000; i++) {
+             executor.submit(() -> {
+                 try { Thread.sleep(1000); } catch (Exception e) {}
+                 visitCount++; // NOT THREAD SAFE!
+             });
+        }
+        
+        executor.shutdown();
+        executor.awaitTermination(10, TimeUnit.SECONDS);
         System.out.println("Finished! Total Visits: " + visitCount);
     }
 }
 ```
 
-### The "Bug"
-1. **Crash:** Creating 100k OS threads requires ~200GB of RAM (2MB per thread).
-2. **Race Condition:** Even if it runs, `visitCount++` is not atomic. You will lose counts.
-
 ### Your Task
-1. Fix the crash using **Virtual Threads** (Java 21+).
-2. Fix the counter using `AtomicInteger` so we get exactly 100,000.
+1. **Scale:** Use **Virtual Threads** to handle 100k concurrent connections without crashing (they use bytes of RAM, not MBs).
+2. **Thread Safety:** Use `AtomicInteger` to ensure the count is exactly 100,000.
 
-<details>
-<summary><b>Click to Reveal Solution</b></summary>
-
-### Solution
-Change the Executor to `newVirtualThreadPerTaskExecutor` and use `AtomicInteger`.
-
-```java
-import java.util.concurrent.atomic.AtomicInteger;
-
-public class SafeVirtualThreads {
-    static AtomicInteger visitCount = new AtomicInteger(0);
-
-    public static void main(String[] args) {
-        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (int i = 0; i < 100_000; i++) {
-                    executor.submit(() -> {
-                        try { Thread.sleep(1000); } catch (Exception e) {}
-                        visitCount.incrementAndGet(); // Thread Safe!
-                    });
-            }
-        }
-        System.out.println("Finished! Total Visits: " + visitCount.get());
-    }
-}
-```
-**Result:** Runs in ~1 second, uses minimal RAM, and prints exactly 100,000.
-</details>
 
 ---
 
@@ -410,33 +320,6 @@ Make this run in **~1 second**.
 2.  Wait for **ALL** of them to finish.
 3.  Combine the results into the print statement.
 
-<details>
-<summary><b>Click to Reveal Solution</b></summary>
-
-### Solution
-Use `CompletableFuture.supplyAsync` to start them, and `CompletableFuture.allOf` (or just join them independently if you don't need to trigger a single callback) to wait.
-
-```java
-CompletableFuture<String> pFuture = CompletableFuture.supplyAsync(() -> getProfile());
-CompletableFuture<String> oFuture = CompletableFuture.supplyAsync(() -> getOrders());
-CompletableFuture<String> sFuture = CompletableFuture.supplyAsync(() -> getSuggestions());
-
-// Wait for all (Optional, but good for structured concurrency concepts)
-CompletableFuture.allOf(pFuture, oFuture, sFuture).join(); 
-
-// Fetch results (now ready)
-System.out.println("Dashboard Loaded: " + 
-    pFuture.join() + " | " + 
-    oFuture.join() + " | " + 
-    sFuture.join()
-);
 ```
-**Advanced (One Pipeline):**
-If you want a single Future that returns the result:
-```java
-pFuture.thenCombine(oFuture, (profile, orders) -> profile + " | " + orders)
-       .thenCombine(sFuture, (partial, suggestions) -> partial + " | " + suggestions)
-       .thenAccept(System.out::println)
-       .join();
-```
-</details>
+
+---

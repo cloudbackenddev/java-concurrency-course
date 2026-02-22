@@ -1080,40 +1080,79 @@ public void testAsync() throws InterruptedException {
         latch.countDown();
     });
 
+```java
     latch.await(1, TimeUnit.SECONDS); // Wait for async task
 }
 ```
 
-### 5.3 Virtual Threads (Java 21+)
-This is the biggest change in Java history.
-**Platform Threads (Old):** 1 Java Thread = 1 OS Thread (Heavy, ~2MB RAM).
-**Virtual Threads (New):** 1000s of Virtual Threads = 1 OS Thread (Light, ~bytes).
+### 5.3 The Event Loop Model & Reactive Programming
+Before Java 21 brought us Virtual Threads, the industry shifted toward **Reactive Programming** to solve the scalability limits of traditional platform threads.
 
-#### The New Paradigm: "One Thread Per Task"
-You no longer need complex Reactive chains (Module 4) just to save threads. You can write simple, blocking code again!
+#### The Problem: Thread-per-Request Bottleneck
+In a traditional Servlet-based application (like standard Spring Boot with Tomcat), each incoming request is assigned a dedicated thread. 
+- If that thread calls a database that takes 2 seconds to respond, the thread stays **Blocked,** doing nothing but consuming 1MB of RAM.
+- To handle 10,000 concurrent users, you’d need 10GB of RAM just for thread stacks!
 
-```java
-// Java 21+ code
-try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-    // Submit 10,000 tasks!
-    for (int i = 0; i < 10_000; i++) {
-        executor.submit(() -> {
-            Thread.sleep(100); // Blocking is cheap now!
-            return "Done";
-        });
-    }
-} // Auto-close waits for all tasks
+#### The Solution: The Event Loop Evolution
+Frameworks like **Spring WebFlux (Project Reactor)** and **Vert.x** adopted the **Event Loop** model, popularized by Node.js. 
+
+**Mechanics of the Event Loop:**
+1.  **Single/Few Threads:** A very small number of threads (often equal to CPU cores) handles all traffic.
+2.  **Non-Blocking I/O:** When a request needs to wait for I/O (e.g., calling a DB), it doesn't wait. It registers a "callback" (an event listener) and the thread immediately moves to the next user.
+3.  **The Callback:** When the DB responds, the event loop picks up that event and finishes the task.
+
+#### Visualizing the Event Loop
+
+```mermaid
+sequenceDiagram
+    participant U1 as User 1
+    participant U2 as User 2
+    participant EL as Event Loop Thread
+    participant DB as Database (External)
+
+    U1->>EL: Request 1
+    EL->>DB: Start I/O 1 (Non-blocking)
+    Note over EL: Thread is now FREE
+    U2->>EL: Request 2
+    EL->>DB: Start I/O 2 (Non-blocking)
+    Note over EL: Thread is still FREE
+    DB-->>EL: I/O 1 Complete (Event)
+    EL->>U1: Response 1
+    DB-->>EL: I/O 2 Complete (Event)
+    EL->>U2: Response 2
 ```
 
+**Comparison: Thread-per-Request vs. Event Loop**
+
+```text
+Thread-per-Request (Servlet)         Event Loop (WebFlux/Node)
+----------------------------         -------------------------
+[User 1] --> [Thread A] (Waiting...) [User 1] \
+[User 2] --> [Thread B] (Waiting...) [User 2] --> [One Thread] --> [OS/DB]
+[User 3] --> [Thread C] (Waiting...) [User 3] /
+(1000 users = 1000 threads)          (1000 users = 1 thread)
+```
+
+| Feature | Scaling Method | Mental Model | Best For |
+| :--- | :--- | :--- | :--- |
+| **Traditional Java** | Add more threads | Imperative (Simple) | General enterprise apps |
+| **Reactive (WebFlux)** | Use Event Loops | Functional (Complex) | Reverse Proxies, Gateways |
+| **Virtual Threads** | Lightweight threads | Imperative (Simple) | High-concurrency I/O |
+
+#### Why use WebFlux or Vert.x today?
+While **Virtual Threads** have made traditional blocking code scalable again, reactive frameworks are still relevant for:
+- **Backpressure:** Managing the flow of data so a fast producer doesn't overwhelm a slow consumer.
+- **Streaming:** Processing massive datasets or real-time event streams that don't have a fixed "end."
+- **Legacy Reactive codebases:** Many high-performance systems are already built this way.
+
 > [!IMPORTANT]
-> **When to use Virtual Threads:** High-throughput I/O servers (Web Servers, Database calls).
-> **When NOT to use:** CPU-heavy tasks (Image processing).
+> **Reactive Programming** solved the scalability problem but introduced "Reactive Complexity." Developers had to learn a new way to write code using `Mono`, `Flux`, and functional chains. Virtual Threads aim to provide the same scalability with the simple code we already know.
 
 ## Conclusion
-You have journeyed from basic `Runnables` to modern `Virtual Threads`.
+You have journeyed from basic `Runnables` to modern asynchronous programming.
 1.  **Understand** JMM and Shared State.
 2.  **Protect** Critical Sections with Locks or Atomic Variables.
 3.  **Scale** with `ExecutorService` and `CompletableFuture`.
-4.  **Simplify** high-concurrency I/O with **Virtual Threads**.
+
 
 **End of Course**
